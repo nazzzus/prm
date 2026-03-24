@@ -1,0 +1,23 @@
+name = "prayer-times-bot"
+main = "src/index.ts"
+compatibility_date = "2024-08-01"
+compatibility_flags = ["nodejs_compat"]
+
+# ── KV Namespace (cache für Gebetszeiten pro Stadt/Tag) ──
+[[kv_namespaces]]
+binding = "PRAYER_CACHE"
+id = "YOUR_KV_NAMESPACE_ID"          # ← nach `wrangler kv namespace create PRAYER_CACHE` eintragen
+
+# ── Cron Triggers ──
+# Jede Minute prüfen ob Erinnerungen fällig sind
+[triggers]
+crons = ["* * * * *"]
+
+# ── Environment Variables (über `wrangler secret put` setzen) ──
+# TELEGRAM_BOT_TOKEN        - von @BotFather
+# MONGODB_DATA_API_KEY      - Atlas Data API Key
+# MONGODB_APP_ID            - Atlas App ID (z.B. data-xxxxx)
+# MONGODB_CLUSTER_NAME      - Cluster Name (z.B. Cluster0)
+# MONGODB_DATABASE_NAME     - Database Name (z.B. prayer_bot)
+# WEBHOOK_SECRET            - Zufälliger String (z.B. openssl rand -hex 32)
+# ADMIN_CHAT_ID             - Deine Telegram Chat-ID (als String)
