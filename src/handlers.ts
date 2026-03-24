@@ -1,5 +1,5 @@
-import { Env, UserSettings, PRAYER_NAMES, PRAYER_LABELS, PrayerName } from "./types";
-import { getUser, saveUser, createUser } from "./db";
+import { Env, UserSettings, PRAYER_NAMES, PRAYER_LABELS, PrayerName, userReminders, reminderColumn } from "./types";
+import { getUser, createUser, updateCity, updateReminderMinutes, updateDailyOverview, togglePrayerReminder, setAllReminders } from "./db";
 import { getPrayerTimes, getHijriDate } from "./prayers";
 import { sendMessage, editMessage, answerCallback } from "./telegram";
 import { sanitizeCityInput, canRegisterNewUser, incrementUserCount, isAdmin, banUser, unbanUser } from "./security";
@@ -46,15 +46,13 @@ export async function handleSetCity(env: Env, chatId: number, text: string): Pro
 
   const { city, country } = input;
 
-  // Prüfe ob User schon existiert (für Max-User-Cap)
+  // Prüfe ob User schon existiert
   const existingUser = await getUser(env, chatId);
   if (!existingUser) {
-    // 🔒 Max Users prüfen
     const canRegister = await canRegisterNewUser(env);
     if (!canRegister) {
       await sendMessage(env, chatId,
-        `❌ Der Bot hat aktuell die maximale Nutzerzahl erreicht.\n` +
-        `Bitte versuche es später erneut.`
+        `❌ Der Bot hat aktuell die maximale Nutzerzahl erreicht.\nBitte versuche es später erneut.`
       );
       return;
     }
@@ -75,10 +73,9 @@ export async function handleSetCity(env: Env, chatId: number, text: string): Pro
   const timezone = await detectTimezone(city, country);
 
   if (existingUser) {
-    await saveUser(env, { chat_id: chatId, city, country, timezone });
+    await updateCity(env, chatId, city, country, timezone);
     await sendMessage(env, chatId,
-      `✅ Stadt geändert zu <b>${city}, ${country}</b>!\n\n` +
-      `Nutze /times um die Gebetszeiten zu sehen.`
+      `✅ Stadt geändert zu <b>${city}, ${country}</b>!\n\nNutze /times um die Gebetszeiten zu sehen.`
     );
   } else {
     await createUser(env, chatId, city, country, timezone);
@@ -97,7 +94,6 @@ export async function handleSetCity(env: Env, chatId: number, text: string): Pro
 }
 
 async function detectTimezone(city: string, country: string): Promise<string> {
-  // Aladhan gibt die Zeitzone im Meta-Feld zurück
   const now = new Date();
   const dd = now.getDate();
   const mm = now.getMonth() + 1;
@@ -111,9 +107,7 @@ async function detectTimezone(city: string, country: string): Promise<string> {
 export async function handleTimes(env: Env, chatId: number): Promise<void> {
   const user = await getUser(env, chatId);
   if (!user) {
-    await sendMessage(env, chatId,
-      `Du bist noch nicht eingerichtet. Nutze /start um loszulegen.`
-    );
+    await sendMessage(env, chatId, `Du bist noch nicht eingerichtet. Nutze /start um loszulegen.`);
     return;
   }
 
@@ -126,10 +120,7 @@ export async function handleTimes(env: Env, chatId: number): Promise<void> {
   }
 
   const today = new Date().toLocaleDateString("de-DE", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
+    weekday: "long", day: "numeric", month: "long", year: "numeric",
     timeZone: user.timezone,
   });
 
@@ -152,7 +143,7 @@ export async function handleHelp(env: Env, chatId: number): Promise<void> {
     `🤲 <b>Gebetszeiten-Bot — Hilfe</b>\n\n` +
     `/start – Bot starten & Stadt setzen\n` +
     `/times – Heutige Gebetszeiten\n` +
-    `/settings – Einstellungen (Erinnerungen, Stadt)\n` +
+    `/settings – Einstellungen anpassen\n` +
     `/help – Diese Hilfe\n\n` +
     `<b>Stadt ändern:</b>\n` +
     `Schreib einfach die neue Stadt, z.B.:\n` +
@@ -179,6 +170,7 @@ export async function handleSettings(env: Env, chatId: number): Promise<void> {
 async function sendSettingsMenu(env: Env, chatId: number, user: UserSettings, editMessageId?: number): Promise<void> {
   const on = "✅";
   const off = "❌";
+  const reminders = userReminders(user);
 
   const text =
     `⚙️ <b>Einstellungen</b>\n\n` +
@@ -186,35 +178,28 @@ async function sendSettingsMenu(env: Env, chatId: number, user: UserSettings, ed
     `⏱ Erinnerung: <b>${user.reminder_minutes} Min. vorher</b>\n` +
     `📋 Tägliche Übersicht: ${user.daily_overview ? on : off}\n\n` +
     `<b>Erinnerungen pro Gebet:</b>\n` +
-    PRAYER_NAMES.map((p) => `${PRAYER_LABELS[p]}: ${user.reminders[p] ? on : off}`).join("\n");
+    PRAYER_NAMES.map((p) => `${PRAYER_LABELS[p]}: ${reminders[p] ? on : off}`).join("\n");
 
   const keyboard = {
     inline_keyboard: [
-      // Toggle pro Gebet
       PRAYER_NAMES.map((p) => ({
-        text: `${user.reminders[p] ? on : off} ${p}`,
+        text: `${reminders[p] ? on : off} ${p}`,
         callback_data: `toggle_prayer:${p}`,
       })),
-      // Tägliche Übersicht toggle
-      [
-        {
-          text: `${user.daily_overview ? on : off} Tägliche Übersicht`,
-          callback_data: "toggle_overview",
-        },
-      ],
-      // Reminder-Minuten
+      [{
+        text: `${user.daily_overview ? on : off} Tägliche Übersicht`,
+        callback_data: "toggle_overview",
+      }],
       [
         { text: "5 Min", callback_data: "set_minutes:5" },
         { text: "10 Min", callback_data: "set_minutes:10" },
         { text: "15 Min", callback_data: "set_minutes:15" },
         { text: "30 Min", callback_data: "set_minutes:30" },
       ],
-      // Alle an/aus
       [
         { text: "✅ Alle an", callback_data: "all_on" },
         { text: "❌ Alle aus", callback_data: "all_off" },
       ],
-      // Stadt ändern
       [{ text: "📍 Stadt ändern", callback_data: "change_city" }],
     ],
   };
@@ -246,49 +231,47 @@ export async function handleCallback(
   // ── Toggle einzelnes Gebet ──
   if (data.startsWith("toggle_prayer:")) {
     const prayer = data.split(":")[1] as PrayerName;
-    user.reminders[prayer] = !user.reminders[prayer];
-    await saveUser(env, { chat_id: chatId, reminders: user.reminders });
-    await answerCallback(env, callbackId, `${prayer}: ${user.reminders[prayer] ? "An ✅" : "Aus ❌"}`);
-    await sendSettingsMenu(env, chatId, user, messageId);
+    const newVal = await togglePrayerReminder(env, chatId, prayer);
+    await answerCallback(env, callbackId, `${prayer}: ${newVal ? "An ✅" : "Aus ❌"}`);
+    const updated = await getUser(env, chatId);
+    if (updated) await sendSettingsMenu(env, chatId, updated, messageId);
     return;
   }
 
   // ── Toggle tägliche Übersicht ──
   if (data === "toggle_overview") {
-    user.daily_overview = !user.daily_overview;
-    await saveUser(env, { chat_id: chatId, daily_overview: user.daily_overview });
-    await answerCallback(env, callbackId, `Übersicht: ${user.daily_overview ? "An ✅" : "Aus ❌"}`);
-    await sendSettingsMenu(env, chatId, user, messageId);
+    const newVal = !user.daily_overview;
+    await updateDailyOverview(env, chatId, newVal);
+    await answerCallback(env, callbackId, `Übersicht: ${newVal ? "An ✅" : "Aus ❌"}`);
+    const updated = await getUser(env, chatId);
+    if (updated) await sendSettingsMenu(env, chatId, updated, messageId);
     return;
   }
 
   // ── Minuten setzen ──
   if (data.startsWith("set_minutes:")) {
     const mins = parseInt(data.split(":")[1], 10);
-    user.reminder_minutes = mins;
-    await saveUser(env, { chat_id: chatId, reminder_minutes: mins });
+    await updateReminderMinutes(env, chatId, mins);
     await answerCallback(env, callbackId, `Erinnerung: ${mins} Min. vorher`);
-    await sendSettingsMenu(env, chatId, user, messageId);
+    const updated = await getUser(env, chatId);
+    if (updated) await sendSettingsMenu(env, chatId, updated, messageId);
     return;
   }
 
   // ── Alle an/aus ──
   if (data === "all_on" || data === "all_off") {
     const value = data === "all_on";
-    for (const p of PRAYER_NAMES) user.reminders[p] = value;
-    user.daily_overview = value;
-    await saveUser(env, { chat_id: chatId, reminders: user.reminders, daily_overview: user.daily_overview });
-    await answerCallback(env, callbackId, value ? "Alle Erinnerungen an ✅" : "Alle Erinnerungen aus ❌");
-    await sendSettingsMenu(env, chatId, user, messageId);
+    await setAllReminders(env, chatId, value);
+    await answerCallback(env, callbackId, value ? "Alle an ✅" : "Alle aus ❌");
+    const updated = await getUser(env, chatId);
+    if (updated) await sendSettingsMenu(env, chatId, updated, messageId);
     return;
   }
 
   // ── Stadt ändern ──
   if (data === "change_city") {
     await answerCallback(env, callbackId);
-    await sendMessage(env, chatId,
-      `📍 Schreib mir deine neue Stadt und Land:\n<code>Hamburg, Germany</code>`
-    );
+    await sendMessage(env, chatId, `📍 Schreib mir deine neue Stadt und Land:\n<code>Hamburg, Germany</code>`);
     return;
   }
 
@@ -296,7 +279,7 @@ export async function handleCallback(
 }
 
 // ══════════════════════════════════════════════
-//  ADMIN COMMANDS (nur für ADMIN_CHAT_ID)
+//  ADMIN COMMANDS
 // ══════════════════════════════════════════════
 
 export async function handleAdmin(env: Env, chatId: number, text: string): Promise<void> {
@@ -306,24 +289,18 @@ export async function handleAdmin(env: Env, chatId: number, text: string): Promi
   }
 
   const parts = text.split(/\s+/);
-  const subCommand = parts[1]; // /admin ban 12345
+  const subCommand = parts[1];
   const targetId = parts[2] ? parseInt(parts[2], 10) : null;
 
   switch (subCommand) {
     case "ban":
-      if (!targetId) {
-        await sendMessage(env, chatId, "Usage: <code>/admin ban CHAT_ID</code>");
-        return;
-      }
+      if (!targetId) { await sendMessage(env, chatId, "Usage: <code>/admin ban CHAT_ID</code>"); return; }
       await banUser(env, targetId);
       await sendMessage(env, chatId, `🔨 User ${targetId} gebannt.`);
       return;
 
     case "unban":
-      if (!targetId) {
-        await sendMessage(env, chatId, "Usage: <code>/admin unban CHAT_ID</code>");
-        return;
-      }
+      if (!targetId) { await sendMessage(env, chatId, "Usage: <code>/admin unban CHAT_ID</code>"); return; }
       await unbanUser(env, targetId);
       await sendMessage(env, chatId, `✅ User ${targetId} entbannt.`);
       return;
@@ -331,8 +308,7 @@ export async function handleAdmin(env: Env, chatId: number, text: string): Promi
     case "stats": {
       const countStr = await env.PRAYER_CACHE.get("user_count");
       await sendMessage(env, chatId,
-        `📊 <b>Bot-Statistiken</b>\n\n` +
-        `👥 Registrierte User: ${countStr ?? "0"}`
+        `📊 <b>Bot-Statistiken</b>\n\n👥 Registrierte User: ${countStr ?? "0"}`
       );
       return;
     }

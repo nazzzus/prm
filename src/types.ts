@@ -1,13 +1,10 @@
 // ── Cloudflare Worker Environment ──
 export interface Env {
   TELEGRAM_BOT_TOKEN: string;
-  MONGODB_DATA_API_KEY: string;
-  MONGODB_APP_ID: string;
-  MONGODB_CLUSTER_NAME: string;
-  MONGODB_DATABASE_NAME: string;
   WEBHOOK_SECRET: string;
   ADMIN_CHAT_ID: string;
   PRAYER_CACHE: KVNamespace;
+  DB: D1Database;
 }
 
 // ── Prayer Names ──
@@ -23,23 +20,42 @@ export const PRAYER_LABELS: Record<PrayerName, string> = {
   Isha: "🌙 Isha",
 };
 
-// ── User Settings (MongoDB Document) ──
+// ── User Settings ──
 export interface UserSettings {
-  _id?: string;
   chat_id: number;
   city: string;
   country: string;
   timezone: string;
-  reminder_minutes: number; // Minuten vor dem Gebet
-  daily_overview: boolean;
-  reminders: Record<PrayerName, boolean>;
+  reminder_minutes: number;
+  daily_overview: number;  // D1 hat kein Boolean → 0/1
+  reminder_fajr: number;
+  reminder_dhuhr: number;
+  reminder_asr: number;
+  reminder_maghrib: number;
+  reminder_isha: number;
   created_at: string;
   updated_at: string;
 }
 
+// Helper: DB-Row zu einem reminders-Objekt
+export function userReminders(u: UserSettings): Record<PrayerName, boolean> {
+  return {
+    Fajr: u.reminder_fajr === 1,
+    Dhuhr: u.reminder_dhuhr === 1,
+    Asr: u.reminder_asr === 1,
+    Maghrib: u.reminder_maghrib === 1,
+    Isha: u.reminder_isha === 1,
+  };
+}
+
+// Helper: Prayer-Name → DB-Spaltenname
+export function reminderColumn(prayer: PrayerName): string {
+  return `reminder_${prayer.toLowerCase()}`;
+}
+
 // ── Prayer Times (von Aladhan API) ──
 export interface PrayerTimes {
-  Fajr: string;   // "05:23"
+  Fajr: string;
   Sunrise: string;
   Dhuhr: string;
   Asr: string;
@@ -49,19 +65,10 @@ export interface PrayerTimes {
 
 export interface CachedPrayerData {
   times: PrayerTimes;
-  date: string; // "YYYY-MM-DD"
+  date: string;
 }
 
-// ── Sent Reminders Tracking ──
-export interface SentReminder {
-  _id?: string;
-  chat_id: number;
-  prayer: PrayerName;
-  date: string;       // "YYYY-MM-DD"
-  type: "reminder" | "overview";
-}
-
-// ── Telegram Types (nur was wir brauchen) ──
+// ── Telegram Types ──
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;

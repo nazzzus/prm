@@ -1,22 +1,15 @@
-import { Env, PRAYER_NAMES, PRAYER_LABELS, PrayerName, UserSettings } from "./types";
+import { Env, PRAYER_NAMES, PRAYER_LABELS, PrayerName, UserSettings, userReminders } from "./types";
 import { getAllUsers, wasReminderSent, markReminderSent, cleanupOldReminders } from "./db";
 import { getPrayerTimes, getCurrentTime, getTodayDate, getHijriDate, timeToMinutes } from "./prayers";
 import { sendMessage } from "./telegram";
 
 /**
- * Hauptfunktion: Wird jede Minute vom Cron-Trigger aufgerufen.
- *
- * 1. Alle User laden
- * 2. Für jeden User prüfen:
- *    a) Ist eine tägliche Übersicht fällig? (morgens um Fajr-Zeit)
- *    b) Ist eine Gebetserinnerung fällig? (X Min. vor einem Gebet)
- * 3. Alte Tracking-Einträge aufräumen (1x täglich)
+ * Wird jede Minute vom Cron-Trigger aufgerufen.
  */
 export async function handleCron(env: Env): Promise<void> {
   const users = await getAllUsers(env);
   if (users.length === 0) return;
 
-  // Gebetszeiten pro Stadt cachen (innerhalb dieses Cron-Runs)
   const timesCache = new Map<string, Awaited<ReturnType<typeof getPrayerTimes>>>();
 
   for (const user of users) {
@@ -43,16 +36,15 @@ async function processUser(
   const today = getTodayDate(user.timezone);
   const { minutes: currentMinutes } = getCurrentTime(user.timezone);
 
-  // Gebetszeiten holen (gecached)
   if (!timesCache.has(cacheKey)) {
     const times = await getPrayerTimes(env, user.city, user.country);
     timesCache.set(cacheKey, times);
   }
   const times = timesCache.get(cacheKey)!;
+  const reminders = userReminders(user);
 
   // ── 1) Tägliche Übersicht ──
   if (user.daily_overview) {
-    // Senden um Fajr-Zeit (± 1 Minute Toleranz)
     const fajrMinutes = timeToMinutes(times.Fajr);
     if (Math.abs(currentMinutes - fajrMinutes) <= 1) {
       const alreadySent = await wasReminderSent(env, user.chat_id, "overview", today, "overview");
@@ -65,13 +57,12 @@ async function processUser(
 
   // ── 2) Einzelne Erinnerungen ──
   for (const prayer of PRAYER_NAMES) {
-    if (!user.reminders[prayer]) continue;
+    if (!reminders[prayer]) continue;
 
     const prayerMinutes = timeToMinutes(times[prayer]);
     const reminderMinutes = prayerMinutes - user.reminder_minutes;
     const diff = currentMinutes - reminderMinutes;
 
-    // Innerhalb einer 2-Minuten-Toleranz (falls Cron mal eine Minute verpasst)
     if (diff >= 0 && diff <= 2) {
       const alreadySent = await wasReminderSent(env, user.chat_id, prayer, today, "reminder");
       if (!alreadySent) {
@@ -82,7 +73,6 @@ async function processUser(
   }
 }
 
-// ── Tägliche Übersicht senden ──
 async function sendDailyOverview(
   env: Env,
   user: UserSettings,
@@ -90,16 +80,11 @@ async function sendDailyOverview(
   today: string
 ): Promise<void> {
   const dateFormatted = new Date(today).toLocaleDateString("de-DE", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
+    weekday: "long", day: "numeric", month: "long", year: "numeric",
   });
 
   let hijri = "";
-  try {
-    hijri = await getHijriDate(user.city, user.country);
-  } catch { /* ignore */ }
+  try { hijri = await getHijriDate(user.city, user.country); } catch { /* ignore */ }
 
   let text = `📋 <b>Gebetszeiten für heute</b>\n`;
   text += `📍 ${user.city}\n`;
@@ -117,18 +102,16 @@ async function sendDailyOverview(
   await sendMessage(env, user.chat_id, text);
 }
 
-// ── Erinnerung vor einem Gebet senden ──
 async function sendPrayerReminder(
   env: Env,
   user: UserSettings,
   prayer: PrayerName,
   time: string
 ): Promise<void> {
-  const text =
+  await sendMessage(env, user.chat_id,
     `⏰ <b>Gebetserinnerung</b>\n\n` +
     `${PRAYER_LABELS[prayer]} ist in <b>${user.reminder_minutes} Minuten</b>\n` +
     `🕐 Um ${time} Uhr\n\n` +
-    `🤲 Bereite dich auf dein Gebet vor.`;
-
-  await sendMessage(env, user.chat_id, text);
+    `🤲 Bereite dich auf dein Gebet vor.`
+  );
 }

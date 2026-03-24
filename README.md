@@ -2,7 +2,7 @@
 
 Ein serverloser Telegram-Bot, der dir täglich Gebetszeiten schickt und dich vor jedem Gebet erinnert.
 
-**Stack:** Cloudflare Workers + MongoDB Atlas + Aladhan API
+**Stack:** Cloudflare Workers + D1 (SQL) + KV Cache + Aladhan API
 
 ---
 
@@ -12,7 +12,7 @@ Ein serverloser Telegram-Bot, der dir täglich Gebetszeiten schickt und dich vor
 - ⏰ **Erinnerungen** X Minuten vor jedem Gebet (konfigurierbar: 5/10/15/30 Min.)
 - 🎛️ **Individuelle Steuerung** per Inline-Buttons — jedes Gebet einzeln ein-/ausschaltbar
 - 📍 **Stadt änderbar** — Gebetszeiten passen sich automatisch an
-- 🌍 **Weltweit** — jede Stadt, die die Aladhan API kennt
+- 🔒 **Abgesichert** — Webhook Secret, Rate Limiting, Input Validation, Ban-System
 - ♻️ **Caching** — Gebetszeiten werden pro Stadt/Tag im KV Store gecached
 
 ---
@@ -22,96 +22,100 @@ Ein serverloser Telegram-Bot, der dir täglich Gebetszeiten schickt und dich vor
 ### 1. Voraussetzungen
 
 - [Node.js](https://nodejs.org/) (v18+)
-- [Cloudflare-Account](https://dash.cloudflare.com/sign-up) (kostenlos)
-- [MongoDB Atlas-Account](https://www.mongodb.com/atlas) (kostenlos)
-- Telegram-Account
+- [Cloudflare-Account](https://dash.cloudflare.com/sign-up) (kostenlos, E-Mail verifiziert!)
 
 ### 2. Telegram Bot erstellen
 
 1. Öffne [@BotFather](https://t.me/BotFather) in Telegram
 2. Sende `/newbot` und folge den Anweisungen
 3. Kopiere den **Bot Token** (Format: `123456:ABC-DEF...`)
-4. Optional: Sende `/setcommands` und gib ein:
+4. Optional: Sende `/setcommands` an BotFather:
    ```
-   start - Bot starten & Stadt setzen
+   start - Bot starten und Stadt setzen
    times - Heutige Gebetszeiten
    settings - Einstellungen anpassen
    help - Hilfe
    ```
 
-### 3. MongoDB Atlas einrichten
+### 3. Deine Telegram Chat-ID herausfinden
 
-1. Erstelle einen **kostenlosen Cluster** auf [MongoDB Atlas](https://cloud.mongodb.com)
-2. Aktiviere die **Data API**:
-   - Atlas Dashboard → `Data API` (linkes Menü)
-   - Klicke "Enable Data API"
-   - Erstelle einen **API Key** → kopiere ihn
-   - Notiere die **App ID** (steht in der URL: `data-xxxxx`)
-3. Notiere den **Cluster-Namen** (z.B. `Cluster0`)
-4. Erstelle eine **Datenbank** namens `prayer_bot`
+Öffne [@userinfobot](https://t.me/userinfobot) in Telegram und sende `/start`.
+Notiere die angezeigte Zahl — das ist deine Chat-ID.
 
-> ⚠️ Die Data API muss für deinen Cluster aktiviert sein!
-
-### 4. Projekt klonen & Dependencies installieren
+### 4. Dependencies installieren
 
 ```bash
-git clone <dein-repo>
-cd prayer-times-bot
 npm install
 ```
 
-### 5. Cloudflare KV Namespace erstellen
+### 5. Bei Cloudflare anmelden
+
+```bash
+npx wrangler login
+```
+
+### 6. KV Namespace erstellen
 
 ```bash
 npx wrangler kv namespace create PRAYER_CACHE
 ```
 
-Kopiere die ausgegebene `id` in die `wrangler.toml`:
+Kopiere die `id` aus der Ausgabe in `wrangler.toml` → ersetze `YOUR_KV_NAMESPACE_ID`.
 
-```toml
-[[kv_namespaces]]
-binding = "PRAYER_CACHE"
-id = "HIER_DIE_ID_EINTRAGEN"
+### 7. D1 Datenbank erstellen
+
+```bash
+npx wrangler d1 create prayer-bot-db
 ```
 
-### 6. Secrets setzen
+Kopiere die `database_id` aus der Ausgabe in `wrangler.toml` → ersetze `YOUR_D1_DATABASE_ID`.
+
+Dann die Tabellen anlegen:
+
+```bash
+npx wrangler d1 execute prayer-bot-db --remote --file=migrations/0001_init.sql
+```
+
+### 8. Webhook Secret generieren
+
+```bash
+openssl rand -hex 32
+```
+
+Kopiere den Output — das ist dein Webhook Secret.
+
+### 9. Secrets setzen
 
 ```bash
 npx wrangler secret put TELEGRAM_BOT_TOKEN
-# → Bot Token einfügen
+# → Bot Token von BotFather einfügen
 
-npx wrangler secret put MONGODB_DATA_API_KEY
-# → Atlas Data API Key einfügen
+npx wrangler secret put WEBHOOK_SECRET
+# → den generierten Hex-String einfügen
 
-npx wrangler secret put MONGODB_APP_ID
-# → Atlas App ID einfügen (z.B. data-xxxxx)
-
-npx wrangler secret put MONGODB_CLUSTER_NAME
-# → z.B. Cluster0
-
-npx wrangler secret put MONGODB_DATABASE_NAME
-# → z.B. prayer_bot
+npx wrangler secret put ADMIN_CHAT_ID
+# → deine Chat-ID einfügen
 ```
 
-### 7. Deployen
+### 10. Deployen
 
 ```bash
 npm run deploy
 ```
 
-### 8. Webhook registrieren
+### 11. Webhook registrieren
 
-Öffne diese URL einmal im Browser:
+Öffne einmal im Browser (ersetze die Werte):
 
 ```
-https://prayer-times-bot.<dein-subdomain>.workers.dev/setup
+https://prayer-times-bot.DEIN-NAME.workers.dev/setup?token=DEIN_WEBHOOK_SECRET
 ```
 
 Du solltest `✅ Webhook gesetzt!` sehen.
 
-### 9. Testen
+### 12. Testen!
 
-Öffne deinen Bot in Telegram und sende `/start`!
+Öffne deinen Bot in Telegram und sende `/start` 🎉
 
 ---
 
@@ -124,77 +128,37 @@ Du solltest `✅ Webhook gesetzt!` sehen.
 | `/settings` | Einstellungen (Inline-Buttons) |
 | `/help` | Hilfe anzeigen |
 
-### Settings-Menü
+### Admin-Befehle (nur für dich)
 
-Über `/settings` kannst du per Inline-Buttons:
-- ✅/❌ Jedes Gebet einzeln ein-/ausschalten
-- ✅/❌ Tägliche Übersicht an/aus
-- ⏱ Erinnerungs-Zeitpunkt wählen (5/10/15/30 Min. vorher)
-- 📍 Stadt ändern
-- Alle Erinnerungen auf einmal an/aus
+| Befehl | Beschreibung |
+|--------|-------------|
+| `/admin ban CHAT_ID` | User sperren |
+| `/admin unban CHAT_ID` | User entsperren |
+| `/admin stats` | User-Statistiken |
+
+---
+
+## Sicherheit
+
+| Schutz | Details |
+|--------|---------|
+| Webhook Secret | Telegram sendet Secret-Header, alles andere → 403 |
+| Rate Limiting | Max 10 Nachrichten/Min pro User, 5 Min Sperre |
+| Input Validation | Regex-Whitelist, Max 100 Zeichen für Städte |
+| Ban System | Permanente Bans über `/admin ban` |
+| Max Users Cap | Limit bei 500 (anpassbar in `security.ts`) |
+| Setup-Schutz | `/setup` nur mit Token aufrufbar |
 
 ---
 
 ## Architektur
 
 ```
-Telegram ──webhook──▶ Cloudflare Worker ──▶ MongoDB Atlas (User Settings)
-                           │
+Telegram ──webhook──▶ Cloudflare Worker ──▶ D1 (User Settings)
+                           │                    KV (Cache + Rate Limits)
                      Cron (jede Min.) ──▶ Aladhan API (Gebetszeiten)
-                           │                    │
-                           │              KV Cache (24h)
                            │
                      ◀── Telegram API (Nachrichten senden)
-```
-
-### Datenbank-Collections
-
-**`users`** — User-Einstellungen:
-```json
-{
-  "chat_id": 123456789,
-  "city": "Berlin",
-  "country": "Germany",
-  "timezone": "Europe/Berlin",
-  "reminder_minutes": 15,
-  "daily_overview": true,
-  "reminders": {
-    "Fajr": true,
-    "Dhuhr": true,
-    "Asr": true,
-    "Maghrib": true,
-    "Isha": true
-  }
-}
-```
-
-**`sent_reminders`** — Tracking (verhindert doppelte Nachrichten):
-```json
-{
-  "chat_id": 123456789,
-  "prayer": "Fajr",
-  "date": "2025-03-24",
-  "type": "reminder"
-}
-```
-
----
-
-## Entwicklung
-
-```bash
-# Lokal entwickeln (mit Tunnel zu Telegram)
-npm run dev
-
-# Logs ansehen
-npm run tail
-```
-
-Für lokale Entwicklung brauchst du [ngrok](https://ngrok.com/) oder ähnliches, um Telegram-Webhooks zu empfangen:
-
-```bash
-ngrok http 8787
-# Dann: https://deine-ngrok-url.ngrok.io/setup aufrufen
 ```
 
 ---
@@ -204,8 +168,8 @@ ngrok http 8787
 | Service | Free Tier |
 |---------|-----------|
 | Cloudflare Workers | 100.000 Requests/Tag |
+| Cloudflare D1 | 5 Mio Reads/Tag, 100k Writes/Tag |
 | Cloudflare KV | 100.000 Reads/Tag, 1.000 Writes/Tag |
-| MongoDB Atlas | 512 MB Storage, Shared Cluster |
 | Aladhan API | Kostenlos, kein API Key nötig |
 
 → **Für hunderte User komplett kostenlos.**
@@ -217,9 +181,8 @@ ngrok http 8787
 - 🧭 Qibla-Richtung senden
 - 📖 Täglicher Quran-Vers
 - 🗓️ Ramadan-Countdown
-- 📊 Gebets-Tracking (hat der User gebetet?)
+- 📊 Gebets-Tracking
 - 🌐 Berechnungsmethode wählbar (aktuell: Diyanet)
-- 👥 Gruppen-Support
 
 ---
 

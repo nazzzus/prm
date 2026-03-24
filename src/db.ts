@@ -1,118 +1,103 @@
-import { Env, UserSettings, SentReminder } from "./types";
+import { Env, UserSettings, PrayerName, reminderColumn } from "./types";
 
-// ── Atlas Data API Base URL ──
-function apiUrl(env: Env): string {
-  return `https://data.mongodb-api.com/app/${env.MONGODB_APP_ID}/endpoint/data/v1`;
-}
-
-function headers(env: Env): Record<string, string> {
-  return {
-    "Content-Type": "application/json",
-    "api-key": env.MONGODB_DATA_API_KEY,
-  };
-}
-
-function baseBody(env: Env, collection: string) {
-  return {
-    dataSource: env.MONGODB_CLUSTER_NAME,
-    database: env.MONGODB_DATABASE_NAME,
-    collection,
-  };
-}
-
-// ── Generic CRUD Helpers ──
-
-async function findOne<T>(env: Env, collection: string, filter: object): Promise<T | null> {
-  const res = await fetch(`${apiUrl(env)}/action/findOne`, {
-    method: "POST",
-    headers: headers(env),
-    body: JSON.stringify({ ...baseBody(env, collection), filter }),
-  });
-  const data = (await res.json()) as { document: T | null };
-  return data.document;
-}
-
-async function findMany<T>(env: Env, collection: string, filter: object): Promise<T[]> {
-  const res = await fetch(`${apiUrl(env)}/action/find`, {
-    method: "POST",
-    headers: headers(env),
-    body: JSON.stringify({ ...baseBody(env, collection), filter }),
-  });
-  const data = (await res.json()) as { documents: T[] };
-  return data.documents;
-}
-
-async function upsertOne(env: Env, collection: string, filter: object, update: object): Promise<void> {
-  await fetch(`${apiUrl(env)}/action/updateOne`, {
-    method: "POST",
-    headers: headers(env),
-    body: JSON.stringify({
-      ...baseBody(env, collection),
-      filter,
-      update: { $set: update },
-      upsert: true,
-    }),
-  });
-}
-
-async function insertOne(env: Env, collection: string, document: object): Promise<void> {
-  await fetch(`${apiUrl(env)}/action/insertOne`, {
-    method: "POST",
-    headers: headers(env),
-    body: JSON.stringify({ ...baseBody(env, collection), document }),
-  });
-}
-
-// ── User Settings ──
+// ══════════════════════════════════════════════
+//  USER CRUD
+// ══════════════════════════════════════════════
 
 export async function getUser(env: Env, chatId: number): Promise<UserSettings | null> {
-  return findOne<UserSettings>(env, "users", { chat_id: chatId });
+  const result = await env.DB.prepare(
+    "SELECT * FROM users WHERE chat_id = ?"
+  ).bind(chatId).first<UserSettings>();
+  return result ?? null;
 }
 
 export async function getAllUsers(env: Env): Promise<UserSettings[]> {
-  return findMany<UserSettings>(env, "users", {});
+  const result = await env.DB.prepare("SELECT * FROM users").all<UserSettings>();
+  return result.results;
 }
 
-export async function saveUser(env: Env, user: Partial<UserSettings> & { chat_id: number }): Promise<void> {
-  await upsertOne(env, "users", { chat_id: user.chat_id }, {
-    ...user,
-    updated_at: new Date().toISOString(),
-  });
-}
-
-export async function createUser(env: Env, chatId: number, city: string, country: string, timezone: string): Promise<UserSettings> {
+export async function createUser(
+  env: Env,
+  chatId: number,
+  city: string,
+  country: string,
+  timezone: string
+): Promise<void> {
   const now = new Date().toISOString();
-  const user: UserSettings = {
-    chat_id: chatId,
-    city,
-    country,
-    timezone,
-    reminder_minutes: 15,
-    daily_overview: true,
-    reminders: { Fajr: true, Dhuhr: true, Asr: true, Maghrib: true, Isha: true },
-    created_at: now,
-    updated_at: now,
-  };
-  await upsertOne(env, "users", { chat_id: chatId }, user);
-  return user;
+  await env.DB.prepare(`
+    INSERT INTO users (
+      chat_id, city, country, timezone,
+      reminder_minutes, daily_overview,
+      reminder_fajr, reminder_dhuhr, reminder_asr, reminder_maghrib, reminder_isha,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 15, 1, 1, 1, 1, 1, 1, ?, ?)
+  `).bind(chatId, city, country, timezone, now, now).run();
 }
 
-// ── Sent Reminders Tracking ──
+export async function updateCity(
+  env: Env,
+  chatId: number,
+  city: string,
+  country: string,
+  timezone: string
+): Promise<void> {
+  await env.DB.prepare(`
+    UPDATE users SET city = ?, country = ?, timezone = ?, updated_at = ?
+    WHERE chat_id = ?
+  `).bind(city, country, timezone, new Date().toISOString(), chatId).run();
+}
+
+export async function updateReminderMinutes(env: Env, chatId: number, minutes: number): Promise<void> {
+  await env.DB.prepare(`
+    UPDATE users SET reminder_minutes = ?, updated_at = ? WHERE chat_id = ?
+  `).bind(minutes, new Date().toISOString(), chatId).run();
+}
+
+export async function updateDailyOverview(env: Env, chatId: number, enabled: boolean): Promise<void> {
+  await env.DB.prepare(`
+    UPDATE users SET daily_overview = ?, updated_at = ? WHERE chat_id = ?
+  `).bind(enabled ? 1 : 0, new Date().toISOString(), chatId).run();
+}
+
+export async function togglePrayerReminder(env: Env, chatId: number, prayer: PrayerName): Promise<boolean> {
+  const col = reminderColumn(prayer);
+  // Toggle: 1→0, 0→1
+  await env.DB.prepare(`
+    UPDATE users SET ${col} = CASE WHEN ${col} = 1 THEN 0 ELSE 1 END, updated_at = ?
+    WHERE chat_id = ?
+  `).bind(new Date().toISOString(), chatId).run();
+
+  // Neuen Wert zurückgeben
+  const user = await getUser(env, chatId);
+  return user ? (user[col as keyof UserSettings] as number) === 1 : false;
+}
+
+export async function setAllReminders(env: Env, chatId: number, enabled: boolean): Promise<void> {
+  const val = enabled ? 1 : 0;
+  await env.DB.prepare(`
+    UPDATE users SET
+      reminder_fajr = ?, reminder_dhuhr = ?, reminder_asr = ?,
+      reminder_maghrib = ?, reminder_isha = ?, daily_overview = ?,
+      updated_at = ?
+    WHERE chat_id = ?
+  `).bind(val, val, val, val, val, val, new Date().toISOString(), chatId).run();
+}
+
+// ══════════════════════════════════════════════
+//  SENT REMINDERS TRACKING
+// ══════════════════════════════════════════════
 
 export async function wasReminderSent(
   env: Env,
   chatId: number,
   prayer: string,
   date: string,
-  type: "reminder" | "overview"
+  type: string
 ): Promise<boolean> {
-  const doc = await findOne<SentReminder>(env, "sent_reminders", {
-    chat_id: chatId,
-    prayer,
-    date,
-    type,
-  });
-  return doc !== null;
+  const result = await env.DB.prepare(`
+    SELECT 1 FROM sent_reminders WHERE chat_id = ? AND prayer = ? AND date = ? AND type = ?
+  `).bind(chatId, prayer, date, type).first();
+  return result !== null;
 }
 
 export async function markReminderSent(
@@ -120,23 +105,20 @@ export async function markReminderSent(
   chatId: number,
   prayer: string,
   date: string,
-  type: "reminder" | "overview"
+  type: string
 ): Promise<void> {
-  await insertOne(env, "sent_reminders", { chat_id: chatId, prayer, date, type });
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO sent_reminders (chat_id, prayer, date, type)
+    VALUES (?, ?, ?, ?)
+  `).bind(chatId, prayer, date, type).run();
 }
 
-// ── Cleanup: alte Einträge löschen (> 2 Tage) ──
 export async function cleanupOldReminders(env: Env): Promise<void> {
   const twoDaysAgo = new Date();
   twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
   const dateStr = twoDaysAgo.toISOString().split("T")[0];
 
-  await fetch(`${apiUrl(env)}/action/deleteMany`, {
-    method: "POST",
-    headers: headers(env),
-    body: JSON.stringify({
-      ...baseBody(env, "sent_reminders"),
-      filter: { date: { $lt: dateStr } },
-    }),
-  });
+  await env.DB.prepare(
+    "DELETE FROM sent_reminders WHERE date < ?"
+  ).bind(dateStr).run();
 }

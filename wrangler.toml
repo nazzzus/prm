@@ -3,21 +3,22 @@ main = "src/index.ts"
 compatibility_date = "2024-08-01"
 compatibility_flags = ["nodejs_compat"]
 
-# ── KV Namespace (cache für Gebetszeiten pro Stadt/Tag) ──
+# ── KV Namespace (Cache + Rate Limiting) ──
 [[kv_namespaces]]
 binding = "PRAYER_CACHE"
-id = "YOUR_KV_NAMESPACE_ID"          # ← nach `wrangler kv namespace create PRAYER_CACHE` eintragen
+id = "5d00f6faa5c241ff92c3f1e3d88dee19"          # ← nach `wrangler kv namespace create PRAYER_CACHE` eintragen
+
+# ── D1 Database ──
+[[d1_databases]]
+binding = "DB"
+database_name = "prayer-bot-db"
+database_id = "b4b68aaf-2382-416b-a35b-5c6201a00359"   # ← nach `wrangler d1 create prayer-bot-db` eintragen
 
 # ── Cron Triggers ──
-# Jede Minute prüfen ob Erinnerungen fällig sind
 [triggers]
 crons = ["* * * * *"]
 
-# ── Environment Variables (über `wrangler secret put` setzen) ──
+# ── Secrets (über `wrangler secret put` setzen) ──
 # TELEGRAM_BOT_TOKEN        - von @BotFather
-# MONGODB_DATA_API_KEY      - Atlas Data API Key
-# MONGODB_APP_ID            - Atlas App ID (z.B. data-xxxxx)
-# MONGODB_CLUSTER_NAME      - Cluster Name (z.B. Cluster0)
-# MONGODB_DATABASE_NAME     - Database Name (z.B. prayer_bot)
-# WEBHOOK_SECRET            - Zufälliger String (z.B. openssl rand -hex 32)
-# ADMIN_CHAT_ID             - Deine Telegram Chat-ID (als String)
+# WEBHOOK_SECRET            - Zufälliger String (openssl rand -hex 32)
+# ADMIN_CHAT_ID             - Deine Telegram Chat-ID
